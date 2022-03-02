@@ -21,12 +21,12 @@
 #define BNO_PCB_ADDR 0x28
 #define BNO_GIMBAL_ADDR 0x29
 
-#define XBEE_RX_PIN 8
-#define XBEE_TX_PIN 9
+#define XBEE_RX_PIN 22
+#define XBEE_TX_PIN 21
 
 #define SD_CS_PIN 10
 
-#define VOLTAGE_PIN 3
+#define VOLTAGE_PIN 15
 #define R1_OHM 1000
 #define R2_OHM 1250
 
@@ -42,7 +42,8 @@ Adafruit_BNO055 bnoPcb = Adafruit_BNO055(55, BNO_PCB_ADDR);
 Adafruit_BNO055 bnoGimbal = Adafruit_BNO055(55, BNO_GIMBAL_ADDR);
 Adafruit_BME280 bme;
 
-SoftwareSerial xbee(XBEE_TX_PIN, XBEE_TX_PIN);
+// SoftwareSerial xbee(XBEE_RX_PIN, XBEE_TX_PIN, true);
+// auto Serial5 = Serial5;
 
 unsigned long time_lastrun = 0;
 unsigned long time_current = 0;
@@ -84,72 +85,93 @@ void getBmeData();
 void getBnoData();
 void getVoltage();
 void gimbalCalibration();
-time_t getTeensy3Time() { return Teensy3Clock.get(); }
+time_t getTeensy3Time() {
+    return Teensy3Clock.get();
+}
 
 void setup() {
     // Components setup
-    Serial.begin(9600);
-    xbee.begin(9600);
-    bme.begin(BME_ADDR, &Wire);
-    // Wire.begin();
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
+    delay(1000);
+    digitalWrite(LED_PIN, LOW);
 
-    if (!bnoPcb.begin()) Serial.println("Unable to set up PCB BNO055!");
-    if (!bnoGimbal.begin()) Serial.println("Unable to set up Gimbal BNO055!");
+    Serial.begin(9600);
+    Serial5.begin(9600);
+    if (bme.begin(BME_ADDR, &Wire))
+        Serial.println("✔ SUCCEED: BME280");
+    else
+        Serial.println("[FAILED] Unable to set up BME280!");
+    if (bnoPcb.begin())
+        Serial.println("✔ SUCCEED: PCB BNO055");
+    else
+        Serial.println("[FAILED] Unable to set up PCB BNO055!");
+    if (bnoGimbal.begin())
+        Serial.println("✔ SUCCEED: Gimbal BNO055");
+    else
+        Serial.println("[FAILED] Unable to set up Gimbal BNO055!");
     bnoPcb.setExtCrystalUse(true);
     bnoGimbal.setExtCrystalUse(true);
 
-    if (!SD.begin(SD_CS_PIN)) {
-        blink(LED_PIN, 5);
-        Serial.println("SD card initialization failed!");
-    }
+    if (SD.begin(SD_CS_PIN))
+        Serial.println("✔ SUCCEED: SD card");
+    else
+        Serial.println("[FAILED] SD card initialization failed!");
 
-    pinMode(LED_PIN, OUTPUT);
     setSyncProvider(getTeensy3Time);
 
     recovery();  // Recovery from EEPROM in case of power failure
+    Serial5.print("READY NOW");
+    delay(3000);
 }
 
 void loop() {
-    if (xbee.available()) {
-        String inTelemetry = xbee.readStringUntil('\r');
-        inTelemetry.trim();
-        if (inTelemetry == "CMD,1022,TP,ON") {
-            packet.packetCount = 0;
-            groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
-            EEPROM.update(groundEEAddr, groundAlt);
-            EEPROM.update(operationEEAddr, true);
-            shouldOperate = true;
-        } else if (inTelemetry == "CMD,1022,TP,OFF") {
-            EEPROM.update(operationEEAddr, 0);
-            shouldOperate = false;
-            for (int i = 0; i < 100; i++) {  // Prepare EEPROM for next session
-                EEPROM.update(i, 0);
-            }
-        } else if (inTelemetry == "CMD,1022,TP,POLL") {
-            digitalWrite(LED_PIN, HIGH);
+    // Serial.println(Serial5.available());
+    // if (Serial5.available()) {
+    //     Serial.println("XBEE Data Available");
+    //     String inTelemetry = Serial5.readStringUntil('$');
+    //     inTelemetry.trim();
+    //     Serial.println("Incoming Telem: " + inTelemetry);
+    //     if (inTelemetry == "CMD,1022,TP,ON") {
+    //         packet.packetCount = 0;
+    //         groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
+    //         EEPROM.update(groundEEAddr, groundAlt);
+    //         EEPROM.update(operationEEAddr, true);
+    //         shouldOperate = true;
+    //     } else if (inTelemetry == "CMD,1022,TP,OFF") {
+    //         EEPROM.update(operationEEAddr, 0);
+    //         shouldOperate = false;
+    //         for (int i = 0; i < 100; i++) {  // Prepare EEPROM for next session
+    //             EEPROM.update(i, 0);
+    //         }
+    //     } else if (inTelemetry == "CMD,1022,TP,POLL") {
+    digitalWrite(LED_PIN, HIGH);
 
-            getBnoData();
-            getBmeData();
-            packet.packetCount += 1;
-            sprintf(packet.time, "%02d:%02d:%02d", hour(), minute(), second());
-            String outTelemetry = packet.combine();
-            xbee.print(outTelemetry);
-            Serial.println("Out: " + outTelemetry);
-            EEPROM.put(packetCountEEAddr, packet.packetCount);
-            File file = SD.open(fileName, FILE_WRITE);
-            if (file) {
-                file.println(outTelemetry);
-                file.close();
-            }
-
-            digitalWrite(LED_PIN, LOW);
-        }
+    getBnoData();
+    getBmeData();
+    packet.packetCount += 1;
+    sprintf(packet.time, "%02d:%02d:%02d", hour(), minute(), second());
+    String outTelemetry = packet.combine();
+    // Serial5.print(outTelemetry);
+    Serial.println("outputing");
+    Serial.print(outTelemetry);
+    Serial.println("Out: " + outTelemetry);
+    EEPROM.put(packetCountEEAddr, packet.packetCount);
+    File file = SD.open(fileName, FILE_WRITE);
+    if (file) {
+        file.println(outTelemetry);
+        file.close();
     }
+
+    //         digitalWrite(LED_PIN, LOW);
+    //     }
+    // }
     if (shouldOperate) {
         gimbalCalibration();
     } else {
         digitalWrite(LED_PIN, LOW);
     }
+    delay(1000);
 }
 
 void recovery() {
@@ -158,8 +180,11 @@ void recovery() {
         Serial.println("Recovery status: Operating, recovering...");
         EEPROM.get(packetCountEEAddr, packet.packetCount);
         EEPROM.get(groundEEAddr, groundAlt);
+        blink(LED_PIN, 3);
+
     } else {
         Serial.println("Recovery status: Not Operating");
+        blink(LED_PIN, 4);
     }
 
     // Determine mission file name
@@ -168,6 +193,8 @@ void recovery() {
         fileIndex++;
         String("TP_" + String(fileIndex) + ".txt").toCharArray(fileName, 100);
     } while (SD.exists(fileName));
+    Serial.print("Selected file name: ");
+    Serial.println(fileName);
 }
 
 void getBmeData() {
