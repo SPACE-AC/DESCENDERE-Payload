@@ -15,14 +15,15 @@
 
 #define TEAM_ID 1022
 
+#define BUZZER_PIN 2
 #define LED_PIN 3
 
 #define BME_ADDR 0x76
 #define BNO_PCB_ADDR 0x28
 #define BNO_GIMBAL_ADDR 0x29
 
-#define XBEE_RX_PIN 22
-#define XBEE_TX_PIN 21
+#define XBEE_RX_PIN 7
+#define XBEE_TX_PIN 8
 
 #define SD_CS_PIN 10
 
@@ -42,8 +43,9 @@ Adafruit_BNO055 bnoPcb = Adafruit_BNO055(55, BNO_PCB_ADDR);
 Adafruit_BNO055 bnoGimbal = Adafruit_BNO055(55, BNO_GIMBAL_ADDR);
 Adafruit_BME280 bme;
 
-// SoftwareSerial xbee(XBEE_RX_PIN, XBEE_TX_PIN, true);
-// auto Serial5 = Serial5;
+time_t RTCTime;
+
+SoftwareSerial xbee(XBEE_RX_PIN, XBEE_TX_PIN);
 
 unsigned long time_lastrun = 0;
 unsigned long time_current = 0;
@@ -54,7 +56,7 @@ float groundAlt;
 
 struct Packet {
     unsigned int packetCount;  // tried to make this a static variable, but it didn't work
-    char* time;
+    char time[32] = "xx:xx:xx";
     float altitude;
     float temp;
     float voltage;
@@ -71,7 +73,7 @@ struct Packet {
     String state;
 
     String combine() {
-        return TEAM_ID + ',' + String(time) + ',' + packetCount + ",P," + altitude + ',' +
+        return String(TEAM_ID) + ',' + String(time) + ',' + packetCount + ",P," + altitude + ',' +
                temp + ',' + voltage + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
                ',' + accel_r + ',' + accel_p + ',' + accel_y + ',' + mag_r + ',' +
                mag_p + ',' + mag_y + ',' + pointingError + ',' + state;
@@ -79,7 +81,8 @@ struct Packet {
 };
 Packet packet;
 
-void blink(uint8_t, const unsigned int&, const unsigned int& delay_ms = 100);
+void blink(const unsigned int&, const unsigned int& delay_ms = 100);
+void beep(const unsigned int&, const unsigned int& delay_ms = 100);
 void recovery();
 void getBmeData();
 void getBnoData();
@@ -92,12 +95,13 @@ time_t getTeensy3Time() {
 void setup() {
     // Components setup
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH);
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, HIGH);
     delay(1000);
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
 
     Serial.begin(9600);
-    Serial5.begin(9600);
+    xbee.begin(9600);
     if (bme.begin(BME_ADDR, &Wire))
         Serial.println("✔ SUCCEED: BME280");
     else
@@ -121,57 +125,60 @@ void setup() {
     setSyncProvider(getTeensy3Time);
 
     recovery();  // Recovery from EEPROM in case of power failure
-    Serial5.print("READY NOW");
+    xbee.print("READY NOW\r");
     delay(3000);
 }
 
 void loop() {
-    // Serial.println(Serial5.available());
-    // if (Serial5.available()) {
-    //     Serial.println("XBEE Data Available");
-    //     String inTelemetry = Serial5.readStringUntil('$');
-    //     inTelemetry.trim();
-    //     Serial.println("Incoming Telem: " + inTelemetry);
-    //     if (inTelemetry == "CMD,1022,TP,ON") {
-    //         packet.packetCount = 0;
-    //         groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
-    //         EEPROM.update(groundEEAddr, groundAlt);
-    //         EEPROM.update(operationEEAddr, true);
-    //         shouldOperate = true;
-    //     } else if (inTelemetry == "CMD,1022,TP,OFF") {
-    //         EEPROM.update(operationEEAddr, 0);
-    //         shouldOperate = false;
-    //         for (int i = 0; i < 100; i++) {  // Prepare EEPROM for next session
-    //             EEPROM.update(i, 0);
-    //         }
-    //     } else if (inTelemetry == "CMD,1022,TP,POLL") {
-    digitalWrite(LED_PIN, HIGH);
+    // if (xbee.available())
+    //     Serial.println("True");
+    // else
+    //     Serial.println("False");
+    if (xbee.available()) {
+        Serial.println("XBEE Data Available");
+        String inTelemetry = xbee.readStringUntil('\r');
+        inTelemetry.trim();
+        Serial.println("Incoming Telem: " + inTelemetry);
+        if (inTelemetry == "CMD,1022,TP,ON") {
+            packet.packetCount = 0;
+            groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
+            EEPROM.update(groundEEAddr, groundAlt);
+            EEPROM.update(operationEEAddr, true);
+            shouldOperate = true;
+        } else if (inTelemetry == "CMD,1022,TP,OFF") {
+            EEPROM.update(operationEEAddr, 0);
+            shouldOperate = false;
+            for (int i = 0; i < 100; i++) {  // Prepare EEPROM for next session
+                EEPROM.update(i, 0);
+            }
+        } else if (inTelemetry == "CMD,1022,TP,POLL") {
+            beep(1);
 
-    getBnoData();
-    getBmeData();
-    packet.packetCount += 1;
-    sprintf(packet.time, "%02d:%02d:%02d", hour(), minute(), second());
-    String outTelemetry = packet.combine();
-    // Serial5.print(outTelemetry);
-    Serial.println("outputing");
-    Serial.print(outTelemetry);
-    Serial.println("Out: " + outTelemetry);
-    EEPROM.put(packetCountEEAddr, packet.packetCount);
-    File file = SD.open(fileName, FILE_WRITE);
-    if (file) {
-        file.println(outTelemetry);
-        file.close();
+            getBnoData();
+            getBmeData();
+            packet.packetCount += 1;
+            sprintf(packet.time, "%02d:%02d:%02d", hour(), minute(), second());
+            String outTelemetry = packet.combine() + "\r\r\r";
+
+            digitalWrite(LED_PIN, HIGH);
+            xbee.print(outTelemetry);
+            Serial.print(outTelemetry);
+            digitalWrite(LED_PIN, LOW);
+
+            EEPROM.put(packetCountEEAddr, packet.packetCount);
+            File file = SD.open(fileName, FILE_WRITE);
+            if (file) {
+                file.println(outTelemetry);
+                file.close();
+            }
+        }
     }
-
-    //         digitalWrite(LED_PIN, LOW);
-    //     }
-    // }
     if (shouldOperate) {
         gimbalCalibration();
     } else {
-        digitalWrite(LED_PIN, LOW);
+        // digitalWrite(BUZZER_PIN, LOW);
     }
-    delay(1000);
+    delay(50);
 }
 
 void recovery() {
@@ -180,11 +187,13 @@ void recovery() {
         Serial.println("Recovery status: Operating, recovering...");
         EEPROM.get(packetCountEEAddr, packet.packetCount);
         EEPROM.get(groundEEAddr, groundAlt);
-        blink(LED_PIN, 3);
+        blink(3);
+        beep(3);
 
     } else {
         Serial.println("Recovery status: Not Operating");
-        blink(LED_PIN, 4);
+        blink(4);
+        beep(4);
     }
 
     // Determine mission file name
@@ -221,11 +230,20 @@ void getVoltage() {
     packet.voltage = apparentVoltage * (R1_OHM + R2_OHM) / R2_OHM;
 }
 
-void blink(uint8_t pin, const unsigned int& count, const unsigned int& delay_ms) {
+void blink(const unsigned int& count, const unsigned int& delay_ms) {
     for (unsigned int i = 0; i < count; i++) {
-        digitalWrite(pin, HIGH);
+        digitalWrite(LED_PIN, HIGH);
         delay(delay_ms);
-        digitalWrite(pin, LOW);
+        digitalWrite(LED_PIN, LOW);
+        delay(delay_ms);
+    }
+}
+
+void beep(const unsigned int& count, const unsigned int& delay_ms) {
+    for (unsigned int i = 0; i < count; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(delay_ms);
+        digitalWrite(BUZZER_PIN, LOW);
         delay(delay_ms);
     }
 }
