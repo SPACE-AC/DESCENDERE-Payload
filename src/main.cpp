@@ -28,8 +28,8 @@
 #define SD_CS_PIN 10
 
 #define VOLTAGE_PIN 15
-#define R1_OHM 1000
-#define R2_OHM 1250
+#define R1_OHM 2000.0F
+#define R2_OHM 1200.0F
 
 // CONFIGURATION - END
 
@@ -74,7 +74,7 @@ struct Packet {
 
     String combine() {
         return String(TEAM_ID) + ',' + String(time) + ',' + packetCount + ",P," + altitude + ',' +
-               temp + ',' + voltage + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
+               temp + ',' + String(voltage) + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
                ',' + accel_r + ',' + accel_p + ',' + accel_y + ',' + mag_r + ',' +
                mag_p + ',' + mag_y + ',' + pointingError + ',' + state;
     }
@@ -130,10 +130,7 @@ void setup() {
 }
 
 void loop() {
-    // if (xbee.available())
-    //     Serial.println("True");
-    // else
-    //     Serial.println("False");
+    getVoltage();
     if (xbee.available()) {
         Serial.println("XBEE Data Available");
         String inTelemetry = xbee.readStringUntil('\r');
@@ -209,6 +206,7 @@ void recovery() {
 void getBmeData() {
     packet.temp = bme.readTemperature();
     packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - groundAlt;
+    // packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - 0;
 }
 void getBnoData() {
     imu::Vector<3> gyro = bnoPcb.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
@@ -226,7 +224,7 @@ void getBnoData() {
 }
 
 void getVoltage() {
-    float apparentVoltage = analogRead(VOLTAGE_PIN) * 3.3 / 1024.0;
+    float apparentVoltage = analogRead(VOLTAGE_PIN) * 3.3 / 1023.0;
     packet.voltage = apparentVoltage * (R1_OHM + R2_OHM) / R2_OHM;
 }
 
