@@ -340,8 +340,13 @@ void blinkbeep(const unsigned int& count, const unsigned int& delay_ms) {
     }
 }
 
+double mapf(double x, double in_min, double in_max, double out_min, double out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
 double qw, qx, qy, qz;
 double roll, pitch, heading;
+double pcb_roll, pcb_pitch, pcb_heading;
 double lengthRotated = 0;
 void adjustPitch() {
     // roll is, in fact, pitch in real world (due to sensor placement)
@@ -350,7 +355,7 @@ void adjustPitch() {
         return;
     }
     if (roll > -45 && roll < 135) {
-        pitchServo.write(85);  // 85
+        pitchServo.write(mapf(roll, 135, -45, 85, 50));  // 85
     } else {
         pitchServo.write(98);  // 98
     }
@@ -358,7 +363,7 @@ void adjustPitch() {
 void adjustHeading() {
     // magnetic north (0) is south pole
     // if (heading >= 175 && heading <= 180 || heading >= -180 && heading <= -175) {
-    if (heading >= -5 && heading <= 5) {
+    if (heading >= -10 && heading <= 10) {
         headingServo.write(90);
         return;
     }
@@ -377,15 +382,63 @@ void adjustHeading() {
     // }
 
     if (heading > -180 && heading < 0) {
-        headingServo.write(85);
+        headingServo.write(mapf(heading, -180, 0, 85, 80));  // 85
         lengthRotated -= 1;
     } else {
-        headingServo.write(98);
+        headingServo.write(mapf(heading, 180, 0, 98, 103));  // 98
         lengthRotated += 1;
     }
 }
 
 void (*resetFunc)(void) = 0;
+
+bool initialRound = true;
+// float initialDiff = 0;
+float previousDegree;
+float degreesRotated = 0;
+void getRotatedDegrees() {
+    // straighten degrees
+    if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
+    if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
+    // const float currentDiff = heading - pcb_heading;
+    if (!initialRound) degreesRotated += heading - previousDegree;
+    previousDegree = pcb_heading;
+    initialRound = false;
+
+    if (degreesRotated > 360) {
+        headingServo.write(70);
+    } else if (degreesRotated < -360) {
+        headingServo.write(110);
+    }
+    // if (initialRound) {
+    //     return;
+    //     // initialDiff = currentDiff;
+    // }else{
+    //     // if (abs(currentDiff - initialDiff) > 360) {
+    //     //     lengthRotated = 0;
+    //     //     initialDiff = currentDiff;
+    //     // }
+    // }
+
+    // if(heading - previousDegree>0){
+
+    // }else{
+    // degreesRotated+=heading - previousDegree;
+    // }
+
+    qw = bnoPcb.getQuat().w();
+    qx = bnoPcb.getQuat().x();
+    qy = bnoPcb.getQuat().y();
+    qz = bnoPcb.getQuat().z();
+    double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
+    qw *= qnorm;
+    qx *= qnorm;
+    qy *= qnorm;
+    qz *= qnorm;
+    pcb_roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
+    pcb_pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
+    pcb_heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
+}
 
 void gimbalCalibration() {
     // Do gimbal calibration logicWaiting for logic after testing
@@ -395,7 +448,7 @@ void gimbalCalibration() {
     qx = bnoGimbal.getQuat().x();
     qy = bnoGimbal.getQuat().y();
     qz = bnoGimbal.getQuat().z();
-    Serial.println("Running gimbal calibration...");
+    // Serial.println("Running gimbal calibration...");
     double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
     qw *= qnorm;
     qx *= qnorm;
