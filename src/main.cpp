@@ -1,7 +1,7 @@
 #include <Adafruit_BME280.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
-#include <Comp6DOF_n0m1.h>
+// #include <Comp6DOF_n0m1.h>
 #include <EEPROM.h>
 #include <SD.h>
 #include <SPI.h>
@@ -79,8 +79,8 @@ struct Packet {
     String state;
 
     String combine() {
-        return String(TEAM_ID) + ',' + String(time) + ',' + packetCount + ",T," + altitude + ',' +
-               temp + ',' + String(voltage) + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
+        return String(TEAM_ID) + ',' + String(time) + ',' + packetCount + ",T," + String(altitude) + ',' +
+               String(temp) + ',' + String(voltage) + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
                ',' + accel_r + ',' + accel_p + ',' + accel_y + ',' + mag_r + ',' +
                mag_p + ',' + mag_y + ',' + pointingError + ',' + state + "$$$";
     }
@@ -123,21 +123,21 @@ void setup() {
         Serial.println("✔ SUCCEED: BME280");
     else {
         Serial.println("[FAILED] Unable to set up BME280!");
-        beep(1);
+        blinkbeep(1);
         delay(500);
     }
     if (bnoPcb.begin())
         Serial.println("✔ SUCCEED: PCB BNO055");
     else {
         Serial.println("[FAILED] Unable to set up PCB BNO055!");
-        beep(2);
+        blinkbeep(2);
         delay(500);
     }
     if (bnoGimbal.begin())
         Serial.println("✔ SUCCEED: Gimbal BNO055");
     else {
         Serial.println("[FAILED] Unable to set up Gimbal BNO055!");
-        beep(4);
+        blinkbeep(4);
         delay(500);
     }
     bnoPcb.setExtCrystalUse(true);
@@ -163,7 +163,7 @@ void setup() {
         Serial.println("✔ SUCCEED: SD card reader");
     else {
         Serial.println("[FAILED] SD card reader initialization failed!");
-        beep(5);
+        blinkbeep(5);
     }
 
     delay(1000);
@@ -237,6 +237,7 @@ void doCommand(String telem) {
 }
 
 unsigned long time_lastrun = 0;
+unsigned long timeLastGimbal = 0;
 void loop() {
     if (millis() - time_lastrun > 200) {
         time_lastrun = millis();
@@ -252,7 +253,8 @@ void loop() {
         String inTelemetry = xbee.readStringUntil('\r');
         doCommand(inTelemetry);
     }
-    if (shouldOperate) {
+    if (shouldOperate && millis() - timeLastGimbal > 10) {
+        timeLastGimbal = millis();
         gimbalCalibration();
     } else {
         // digitalWrite(BUZZER_PIN, LOW);
@@ -307,7 +309,7 @@ void getVoltage() {
     float apparentVoltage = analogRead(VOLTAGE_PIN) * 3.3 / 1023.0;
     packet.voltage = apparentVoltage * (R1_OHM + R2_OHM) / R2_OHM;
     if (packet.voltage < 5.3) {
-        blinkbeep(10, 25);
+        blink(10, 25);
     }
 }
 
@@ -363,10 +365,11 @@ void adjustPitch() {
 void adjustHeading() {
     // magnetic north (0) is south pole
     // if (heading >= 175 && heading <= 180 || heading >= -180 && heading <= -175) {
-    if (heading >= -10 && heading <= 10) {
-        headingServo.write(90);
-        return;
-    }
+
+    // if (heading >= -10 && heading <= 10) {
+    //     headingServo.write(90);
+    //     return;
+    // }
 
     // prevent wire twisting
     // if (heading >= 175 && heading <= 180) {
@@ -382,10 +385,10 @@ void adjustHeading() {
     // }
 
     if (heading > -180 && heading < 0) {
-        headingServo.write(mapf(heading, -180, 0, 85, 80));  // 85
+        headingServo.write(mapf(heading, 0, -180, 90, -20));  // 85 CW 86 88
         lengthRotated -= 1;
     } else {
-        headingServo.write(mapf(heading, 180, 0, 98, 103));  // 98
+        headingServo.write(mapf(heading, 0, 180, 90, 200));  // 98 CCW 95 93
         lengthRotated += 1;
     }
 }
@@ -394,20 +397,23 @@ void (*resetFunc)(void) = 0;
 
 bool initialRound = true;
 // float initialDiff = 0;
-float previousDegree;
-float degreesRotated = 0;
+double previousDegree;
+double degreesRotated = 0;
 void getRotatedDegrees() {
     // straighten degrees
-    if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
-    if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
+    // if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
+    // if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
     // const float currentDiff = heading - pcb_heading;
     if (!initialRound) degreesRotated += heading - previousDegree;
     previousDegree = pcb_heading;
     initialRound = false;
 
-    if (degreesRotated > 360) {
+    Serial.print(heading);
+    Serial.print(" ");
+    Serial.println(degreesRotated);
+    if (degreesRotated > 270) {
         headingServo.write(70);
-    } else if (degreesRotated < -360) {
+    } else if (degreesRotated < -270) {
         headingServo.write(110);
     }
     // if (initialRound) {
@@ -471,15 +477,22 @@ void gimbalCalibration() {
         // resetFunc();
         return;
     }
-    Serial.print(roll);
-    Serial.print("\t");
-    Serial.print(pitch);
-    Serial.print("\t");
-    Serial.print(heading);
-    Serial.print("\t");
-    Serial.println(lengthRotated);
+    // Serial.print(roll);
+    // Serial.print("\t");
+    // Serial.print(pitch);
+    // Serial.print("\t");
+    // Serial.print(heading);
+    // Serial.print("\t");
+    // Serial.println(lengthRotated);
     if (millis() > 3000) {
         adjustPitch();
         adjustHeading();
+        getRotatedDegrees();
+        // if (heading > 0) {
+        //     packet.pointingError = 180 - heading;
+        // } else if (heading < 0) {
+        //     packet.pointingError = -180 - heading;
+        // }
+        packet.pointingError = heading;
     }
 }
