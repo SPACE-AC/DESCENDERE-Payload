@@ -181,6 +181,7 @@ void doCommand(String telem) {
     Serial.println("IN: " + telem);
     if (telem == "ON") {
         if (millis() - lastOn < 1000) return;
+        packet.state = "ACQUIRING_TARGET";
         shouldOperate = true;
         Serial.println("OPERATION ON");
         packet.packetCount = 0;
@@ -193,6 +194,7 @@ void doCommand(String telem) {
         digitalWrite(CAMERA_PIN, HIGH);
         lastOn = millis();
     } else if (telem == "OFF") {
+        packet.state = "IDLE";
         if (millis() - lastOff < 1000) return;
         shouldOperate = false;
         Serial.println("OPERATION OFF");
@@ -404,7 +406,7 @@ void getRotatedDegrees() {
     // if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
     // if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
     // const float currentDiff = heading - pcb_heading;
-    if (!initialRound) degreesRotated += heading - previousDegree;
+    if (!initialRound) degreesRotated += pcb_heading - previousDegree;
     previousDegree = pcb_heading;
     initialRound = false;
 
