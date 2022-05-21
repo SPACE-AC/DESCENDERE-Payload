@@ -2,7 +2,9 @@
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
 // #include <Comp6DOF_n0m1.h>
+#include <AutoPID.h>
 #include <EEPROM.h>
+#include <InternalTemperature.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
@@ -10,6 +12,8 @@
 #include <TimeLib.h>
 #include <Wire.h>
 #include <utility/imumaths.h>
+
+#include <queue>
 
 // Define connection pins
 
@@ -30,12 +34,14 @@
 #define SD_CS_PIN 10
 
 #define VOLTAGE_PIN 20
-#define R1_OHM 3000.0F
-#define R2_OHM 1740.0F
+#define R1_OHM 2000.0F
+#define R2_OHM 1250.0F
 
 #define SERVO_HEADING_PIN 5
 #define SERVO_PITCH_PIN 6
 #define CAMERA_PIN 0
+
+#define GIMBAL_CHECK_RATE 10
 
 // CONFIGURATION - END
 
@@ -59,6 +65,7 @@ SoftwareSerial xbee(XBEE_RX_PIN, XBEE_TX_PIN);
 bool shouldOperate;
 char fileName[100];
 float groundAlt;
+bool isBnoGimbalOk = true;
 
 struct Packet {
     unsigned long packetCount;  // tried to make this a static variable, but it didn't work
@@ -75,17 +82,54 @@ struct Packet {
     float mag_r;
     float mag_p;
     float mag_y;
-    float pointingError;
+    double pointingError = 0;
     String state;
 
     String combine() {
-        return String(TEAM_ID) + ',' + String(time) + ',' + packetCount + ",T," + String(altitude) + ',' +
-               String(temp) + ',' + String(voltage) + ',' + gyro_r + ',' + gyro_p + ',' + gyro_y +
-               ',' + accel_r + ',' + accel_p + ',' + accel_y + ',' + mag_r + ',' +
-               mag_p + ',' + mag_y + ',' + pointingError + ',' + state + "$$$";
+        return String(TEAM_ID) + "," + String(time) + "," + packetCount + ",T," + String(altitude) + "," +
+               String(temp) + "," + String(voltage) + "," + gyro_r + "," + gyro_p + "," + gyro_y +
+               "," + accel_r + "," + accel_p + "," + accel_y + "," + mag_r + "," +
+               mag_p + "," + mag_y + "," + pointingError + "," + state + "$$$";
     }
 };
 Packet packet;
+
+double Setpoint = 0;
+double servoSpeed = 90;
+// PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 8, 0.2, 3100, DIRECT);
+// PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 0, 100, 3100, DIRECT);
+// AutoPID pid(&packet.pointingError, &Setpoint, &servoSpeed, 0, 180, 5, 5, 0.1);
+
+class SimpleMovingAverage {
+    int size;
+    int count;
+    std::queue<float> buffer;
+    float sum;
+
+   public:
+    SimpleMovingAverage(int size) {
+        this->size = size;
+        count = 0;
+        sum = 0;
+    }
+
+    void add(float value) {
+        if (count < size) {
+            buffer.push(value);
+            sum += value;
+            count++;
+        } else {
+            sum -= buffer.front();
+            buffer.pop();
+            buffer.push(value);
+            sum += value;
+        }
+    }
+
+    float getAverage() {
+        return sum / count;
+    }
+}(sma)(100);
 
 void blink(const unsigned int&, const unsigned int& delay_ms = 100);
 void beep(const unsigned int&, const unsigned int& delay_ms = 100);
@@ -137,11 +181,17 @@ void setup() {
         Serial.println("✔ SUCCEED: Gimbal BNO055");
     else {
         Serial.println("[FAILED] Unable to set up Gimbal BNO055!");
+        isBnoGimbalOk = false;
         blinkbeep(4);
         delay(500);
     }
     bnoPcb.setExtCrystalUse(true);
     bnoGimbal.setExtCrystalUse(true);
+
+    // pid.setBangBang(0);
+    // pid.setTimeStep(100);
+    for (int i = 0; i < 300; i++)
+        sma.add(90);
 
     // // get bno055 offset
     // bnoPcb.setMode(OPERATION_MODE_CONFIG);
@@ -217,8 +267,8 @@ void doCommand(String telem) {
         // String outTelemetry = packet.combine() + "\r\r\r";
 
         digitalWrite(LED_PIN, HIGH);
-        String outTelemetry1 = outTelemetry.substring(0, outTelemetry.length() / 2);
-        String outTelemetry2 = outTelemetry.substring(outTelemetry.length() / 2, outTelemetry.length());
+        // String outTelemetry1 = outTelemetry.substring(0, outTelemetry.length() / 2);
+        // String outTelemetry2 = outTelemetry.substring(outTelemetry.length() / 2, outTelemetry.length());
         // xbee.print(outTelemetry1);
         // Serial.print(outTelemetry1);
         // // delay(50);
@@ -241,11 +291,12 @@ void doCommand(String telem) {
 unsigned long time_lastrun = 0;
 unsigned long timeLastGimbal = 0;
 void loop() {
-    if (millis() - time_lastrun > 200) {
+    if (millis() - time_lastrun > 250) {
         time_lastrun = millis();
         getVoltage();
         getBnoData();
         getBmeData();
+        // doCommand("POLL");
     }
     if (Serial.available()) {
         String inTelemetry = Serial.readStringUntil('\n');
@@ -255,9 +306,9 @@ void loop() {
         String inTelemetry = xbee.readStringUntil('\r');
         doCommand(inTelemetry);
     }
-    if (shouldOperate && millis() - timeLastGimbal > 10) {
+    if (shouldOperate && millis() - timeLastGimbal > GIMBAL_CHECK_RATE) {
         timeLastGimbal = millis();
-        gimbalCalibration();
+        if (isBnoGimbalOk) gimbalCalibration();
     } else {
         // digitalWrite(BUZZER_PIN, LOW);
     }
@@ -265,15 +316,17 @@ void loop() {
 
 void recovery() {
     shouldOperate = EEPROM.read(operationEEAddr);
+    packet.packetCount = EEPROM.read(packetCountEEAddr);
+    groundAlt = EEPROM.read(groundEEAddr);
     if (shouldOperate) {
         Serial.println("Recovery status: Operating, recovering...");
-        EEPROM.get(packetCountEEAddr, packet.packetCount);
-        EEPROM.get(groundEEAddr, groundAlt);
         digitalWrite(CAMERA_PIN, LOW);
         delay(550);
         digitalWrite(CAMERA_PIN, HIGH);
+        packet.state = "ACQUIRING_TARGET";
     } else {
         Serial.println("Recovery status: Not Operating");
+        packet.state = "IDLE";
     }
 
     // Determine mission file name
@@ -310,9 +363,9 @@ void getBnoData() {
 void getVoltage() {
     float apparentVoltage = analogRead(VOLTAGE_PIN) * 3.3 / 1023.0;
     packet.voltage = apparentVoltage * (R1_OHM + R2_OHM) / R2_OHM;
-    if (packet.voltage < 5.3) {
-        blink(10, 25);
-    }
+    // if (packet.voltage < 5.3) {
+    //     blink(10, 25);
+    // }
 }
 
 void blink(const unsigned int& count, const unsigned int& delay_ms) {
@@ -349,50 +402,65 @@ double mapf(double x, double in_min, double in_max, double out_min, double out_m
 }
 
 double qw, qx, qy, qz;
-double roll, pitch, heading;
+double pitch, heading;
 double pcb_roll, pcb_pitch, pcb_heading;
 double lengthRotated = 0;
 void adjustPitch() {
-    // roll is, in fact, pitch in real world (due to sensor placement)
-    if (roll >= 130 && roll <= 140) {
+    if (pitch >= 130 && pitch <= 140) {
         pitchServo.write(90);
         return;
     }
-    if (roll > -45 && roll < 135) {
-        pitchServo.write(mapf(roll, 135, -45, 85, 50));  // 85
+    if (pitch > -45 && pitch < 135) {
+        pitchServo.write(mapf(pitch, 135, -45, 85, 50));  // 85
     } else {
         pitchServo.write(98);  // 98
     }
 }
+// void adjustHeading() {
+//     float speed;
+//     if (packet.pointingError < 0) {
+//         if (packet.pointingError > -20)
+//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 115);
+//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 97, 180);  // 85 CW 86 88 200
+//         headingServo.write(speed);                                                                     // 85 CW 86 88 200
+//         lengthRotated -= 1;
+//     } else {
+//         if (packet.pointingError < 20)
+//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 76);  // 98 CCW 95 93 -20
+//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 86, 0);       // 98 CCW 95 93 -20
+//         headingServo.write(speed);                                                                       // 98 CCW 95 93 -20
+//         lengthRotated += 1;
+//     }
+//     Serial.println(speed);
+// }
 void adjustHeading() {
-    // magnetic north (0) is south pole
-    // if (heading >= 175 && heading <= 180 || heading >= -180 && heading <= -175) {
+    // pid.run();
 
-    // if (heading >= -10 && heading <= 10) {
-    //     headingServo.write(90);
-    //     return;
-    // }
-
-    // prevent wire twisting
-    // if (heading >= 175 && heading <= 180) {
-    //     headingServo.write(180);
-    //     delay(500);
-    //     headingServo.write(90);
-    //     return;
-    // } else if (heading >= -180 && heading <= -175) {
-    //     headingServo.write(0);
-    //     delay(500);
-    //     headingServo.write(90);
-    //     return;
-    // }
-
-    if (heading > -180 && heading < 0) {
-        headingServo.write(mapf(heading, 0, -180, 90, -20));  // 85 CW 86 88
+    if (heading < 0) {
+        // servoSpeed = mapf(sma.getAverage(), 0, -180, 90, -20);
+        servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
+        // headingServo.write();  // 85 CW 86 88
         lengthRotated -= 1;
     } else {
-        headingServo.write(mapf(heading, 0, 180, 90, 200));  // 98 CCW 95 93
+        // servoSpeed = mapf(sma.getAverage(), 0, 180, 90, 200);
+        servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
+        // headingServo.write();  // 98 CCW 95 93
         lengthRotated += 1;
     }
+    sma.add(servoSpeed);
+    headingServo.write(servoSpeed);
+    // if (packet.pointingError < 0) {
+    //     // servoSpeed = mapf((packet.pointingError > -20 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 0);  // 85 CW 86 88 200
+    //     headingServo.write(servoSpeed);  // 85 CW 86 88 200
+    //     lengthRotated -= 1;
+    // } else {
+    //     // servoSpeed = mapf((packet.pointingError < 20 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 180);  // 98 CCW 95 93 -20
+    //     headingServo.write(servoSpeed);  // 98 CCW 95 93 -20
+    //     lengthRotated += 1;
+    // }
+    Serial.print(packet.pointingError);
+    Serial.print(" ");
+    Serial.println(servoSpeed);
 }
 
 void (*resetFunc)(void) = 0;
@@ -402,6 +470,7 @@ bool initialRound = true;
 double previousDegree;
 double degreesRotated = 0;
 void getRotatedDegrees() {
+    return;
     // straighten degrees
     // if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
     // if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
@@ -418,21 +487,6 @@ void getRotatedDegrees() {
     } else if (degreesRotated < -270) {
         headingServo.write(110);
     }
-    // if (initialRound) {
-    //     return;
-    //     // initialDiff = currentDiff;
-    // }else{
-    //     // if (abs(currentDiff - initialDiff) > 360) {
-    //     //     lengthRotated = 0;
-    //     //     initialDiff = currentDiff;
-    //     // }
-    // }
-
-    // if(heading - previousDegree>0){
-
-    // }else{
-    // degreesRotated+=heading - previousDegree;
-    // }
 
     qw = bnoPcb.getQuat().w();
     qx = bnoPcb.getQuat().x();
@@ -462,7 +516,7 @@ void gimbalCalibration() {
     qx *= qnorm;
     qy *= qnorm;
     qz *= qnorm;
-    roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
+    // roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
     pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
     heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
 
@@ -470,7 +524,7 @@ void gimbalCalibration() {
     double heading2 = atan2(mag.y(), mag.x()) * 180 / M_PI;
     // double heading3 =
 
-    if ((isnan(roll) || isnan(pitch) || isnan(heading)) && millis() > 3000) {
+    if ((isnan(pitch) || isnan(heading)) && millis() > 3000) {
         headingServo.write(90);
         pitchServo.write(90);
         // Wire.endTransmission();
@@ -496,5 +550,35 @@ void gimbalCalibration() {
         //     packet.pointingError = -180 - heading;
         // }
         packet.pointingError = heading;
+        // sma.add(packet.pointingError);
     }
 }
+
+// void gimbalCalibration() {
+//     // Do gimbal calibration logicWaiting for logic after testing
+//     // Don't forget to set 'pointing error' and 'state'
+//     sensors_event_t event;
+//     bnoGimbal.getEvent(&event);
+
+//     heading = event.orientation.roll;
+//     pitch = event.orientation.heading;  // sensor roll is, in fact, pitch in real world (due to sensor placement)
+
+//     if ((isnan(pitch) || isnan(heading)) && millis() > 3000) {
+//         headingServo.write(90);
+//         pitchServo.write(90);
+//         delay(100);
+//         return;
+//     }
+//     if (millis() > 3000) {
+//         packet.pointingError = heading - 180;
+//         if (packet.pointingError <= -20 && packet.pointingError >= 20)
+//             sma.add(packet.pointingError);
+//         Serial.print(packet.pointingError);
+//         Serial.print("\t");
+//         Serial.print(sma.getAverage());
+//         Serial.print("\t");
+//         adjustPitch();
+//         adjustHeading();
+//         getRotatedDegrees();
+//     }
+// }
