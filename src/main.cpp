@@ -2,9 +2,10 @@
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
 // #include <Comp6DOF_n0m1.h>
-#include <AutoPID.h>
+// #include <AutoPID.h>
 #include <EEPROM.h>
 #include <InternalTemperature.h>
+#include <PID_v1.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
@@ -94,9 +95,8 @@ struct Packet {
 };
 Packet packet;
 
-double Setpoint = 0;
-double servoSpeed = 90;
-// PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 8, 0.2, 3100, DIRECT);
+double Setpoint = 0, pidOutput;
+// PID pid(&packet.pointingError, &pidOutput, &Setpoint, 1, 0, 0.5, REVERSE);
 // PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 0, 100, 3100, DIRECT);
 // AutoPID pid(&packet.pointingError, &Setpoint, &servoSpeed, 0, 180, 5, 5, 0.1);
 
@@ -129,7 +129,7 @@ class SimpleMovingAverage {
     float getAverage() {
         return sum / count;
     }
-}(sma)(100);
+}(sma)(10);
 
 void blink(const unsigned int&, const unsigned int& delay_ms = 100);
 void beep(const unsigned int&, const unsigned int& delay_ms = 100);
@@ -190,8 +190,8 @@ void setup() {
 
     // pid.setBangBang(0);
     // pid.setTimeStep(100);
-    for (int i = 0; i < 300; i++)
-        sma.add(90);
+    // for (int i = 0; i < 300; i++)
+    //     sma.add(90);
 
     // // get bno055 offset
     // bnoPcb.setMode(OPERATION_MODE_CONFIG);
@@ -242,6 +242,9 @@ void doCommand(String telem) {
         digitalWrite(CAMERA_PIN, LOW);
         delay(550);
         digitalWrite(CAMERA_PIN, HIGH);
+        // pid.SetOutputLimits(-30, 30);
+        // pid.SetMode(AUTOMATIC);
+        // pid.SetSampleTime(GIMBAL_CHECK_RATE);
         lastOn = millis();
     } else if (telem == "OFF") {
         packet.state = "IDLE";
@@ -312,6 +315,7 @@ void loop() {
     } else {
         // digitalWrite(BUZZER_PIN, LOW);
     }
+    // pid.Compute();
 }
 
 void recovery() {
@@ -413,55 +417,67 @@ void adjustPitch() {
     if (pitch > -45 && pitch < 135) {
         pitchServo.write(mapf(pitch, 135, -45, 85, 50));  // 85
     } else {
+        // pitchServo.write(mapf(pitch, 135, 180, 98, 100));  // 98
         pitchServo.write(98);  // 98
     }
 }
-// void adjustHeading() {
-//     float speed;
-//     if (packet.pointingError < 0) {
-//         if (packet.pointingError > -20)
-//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 115);
-//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 97, 180);  // 85 CW 86 88 200
-//         headingServo.write(speed);                                                                     // 85 CW 86 88 200
-//         lengthRotated -= 1;
-//     } else {
-//         if (packet.pointingError < 20)
-//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 76);  // 98 CCW 95 93 -20
-//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 86, 0);       // 98 CCW 95 93 -20
-//         headingServo.write(speed);                                                                       // 98 CCW 95 93 -20
-//         lengthRotated += 1;
-//     }
-//     Serial.println(speed);
-// }
 void adjustHeading() {
-    // pid.run();
-
-    if (heading < 0) {
-        // servoSpeed = mapf(sma.getAverage(), 0, -180, 90, -20);
-        servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
-        // headingServo.write();  // 85 CW 86 88
+    float speed;
+    sma.add(packet.pointingError);
+    if (packet.pointingError < 0) {
+        if (packet.pointingError > -20)
+            speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 76);
+        speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 45);  // 85 CW 86 88 200
+        headingServo.write(speed);                                                                    // 85 CW 86 88 200
         lengthRotated -= 1;
     } else {
-        // servoSpeed = mapf(sma.getAverage(), 0, 180, 90, 200);
-        servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
-        // headingServo.write();  // 98 CCW 95 93
+        if (packet.pointingError < 20)
+            speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
+        speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 135);      // 98 CCW 95 93 -20
+        headingServo.write(speed);                                                                        // 98 CCW 95 93 -20
         lengthRotated += 1;
     }
-    sma.add(servoSpeed);
-    headingServo.write(servoSpeed);
-    // if (packet.pointingError < 0) {
-    //     // servoSpeed = mapf((packet.pointingError > -20 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 0);  // 85 CW 86 88 200
-    //     headingServo.write(servoSpeed);  // 85 CW 86 88 200
-    //     lengthRotated -= 1;
-    // } else {
-    //     // servoSpeed = mapf((packet.pointingError < 20 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 180);  // 98 CCW 95 93 -20
-    //     headingServo.write(servoSpeed);  // 98 CCW 95 93 -20
-    //     lengthRotated += 1;
-    // }
-    Serial.print(packet.pointingError);
-    Serial.print(" ");
-    Serial.println(servoSpeed);
+    Serial.println(speed);
+    Serial.println(packet.pointingError);
 }
+// void adjustHeading() {
+//     // pid.Compute();
+
+//     float servoSpeed = 90;
+//     sma.add(packet.pointingError);
+//     if (heading < 0) {
+//         servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
+//         // servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
+//         // headingServo.write();  // 85 CW 86 88
+//         lengthRotated -= 1;
+//     } else {
+//         servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
+//         // servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
+//         // headingServo.write();  // 98 CCW 95 93
+//         lengthRotated += 1;
+//     }
+//     // sma.add(servoSpeed);
+//     // headingServo.write(sma.getAverage());
+
+//     headingServo.write(servoSpeed);
+
+//     // // PID ver. starts here
+//     // headingServo.write(pidOutput + 90);
+//     // // if (packet.pointingError < 0) {
+//     // //     // servoSpeed = mapf((packet.pointingError > -20 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 0);  // 85 CW 86 88 200
+//     // //     headingServo.write(servoSpeed);  // 85 CW 86 88 200
+//     // //     lengthRotated -= 1;
+//     // // } else {
+//     // //     // servoSpeed = mapf((packet.pointingError < 20 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 180);  // 98 CCW 95 93 -20
+//     // //     headingServo.write(servoSpeed);  // 98 CCW 95 93 -20
+//     // //     lengthRotated += 1;
+//     // // }
+//     // Serial.print(pitch);
+//     // Serial.print(" ");
+//     // Serial.print(packet.pointingError);
+//     // Serial.print(" ");
+//     // Serial.println(pidOutput + 90);
+// }
 
 void (*resetFunc)(void) = 0;
 
@@ -516,8 +532,8 @@ void gimbalCalibration() {
     qx *= qnorm;
     qy *= qnorm;
     qz *= qnorm;
-    // roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
-    pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
+    pitch = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
+    // pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
     heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
 
     const imu::Vector<3> mag = bnoGimbal.getVector(Adafruit_BNO055::VECTOR_MAGNETOMETER);
