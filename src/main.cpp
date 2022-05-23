@@ -42,7 +42,7 @@
 #define SERVO_PITCH_PIN 6
 #define CAMERA_PIN 0
 
-#define GIMBAL_CHECK_RATE 10
+#define GIMBAL_CHECK_RATE 5
 
 // CONFIGURATION - END
 
@@ -96,7 +96,8 @@ struct Packet {
 Packet packet;
 
 double Setpoint = 0, pidOutput;
-// PID pid(&packet.pointingError, &pidOutput, &Setpoint, 1, 0, 0.5, REVERSE);
+double tError;
+PID pid(&tError, &pidOutput, &Setpoint, 0.35, 0.000005, 0.04, REVERSE);
 // PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 0, 100, 3100, DIRECT);
 // AutoPID pid(&packet.pointingError, &Setpoint, &servoSpeed, 0, 180, 5, 5, 0.1);
 
@@ -129,7 +130,7 @@ class SimpleMovingAverage {
     float getAverage() {
         return sum / count;
     }
-}(sma)(1);
+}(sma)(100);
 
 void blink(const unsigned int&, const unsigned int& delay_ms = 100);
 void beep(const unsigned int&, const unsigned int& delay_ms = 100);
@@ -188,6 +189,9 @@ void setup() {
     bnoPcb.setExtCrystalUse(true);
     bnoGimbal.setExtCrystalUse(true);
 
+    pid.SetMode(AUTOMATIC);
+    pid.SetSampleTime(GIMBAL_CHECK_RATE);
+
     // pid.setBangBang(0);
     // pid.setTimeStep(100);
     // for (int i = 0; i < 300; i++)
@@ -243,8 +247,8 @@ void doCommand(String telem) {
         delay(550);
         digitalWrite(CAMERA_PIN, HIGH);
         // pid.SetOutputLimits(-30, 30);
-        // pid.SetMode(AUTOMATIC);
-        // pid.SetSampleTime(GIMBAL_CHECK_RATE);
+        pid.SetMode(AUTOMATIC);
+        pid.SetSampleTime(GIMBAL_CHECK_RATE);
         lastOn = millis();
     } else if (telem == "OFF") {
         packet.state = "IDLE";
@@ -315,7 +319,7 @@ void loop() {
     } else {
         // digitalWrite(BUZZER_PIN, LOW);
     }
-    // pid.Compute();
+    pid.Compute();
 }
 
 void recovery() {
@@ -415,69 +419,42 @@ void adjustPitch() {
         return;
     }
     if (pitch > -45 && pitch < 135) {
-        pitchServo.write(mapf(pitch, 135, -45, 85, 50));  // 85
+        pitchServo.write(mapf(pitch, 135, 125, 90, 85));  // 85 50
     } else {
         // pitchServo.write(mapf(pitch, 135, 180, 98, 100));  // 98
         pitchServo.write(98);  // 98
     }
 }
-void adjustHeading() {
-    float speed;
-    sma.add(packet.pointingError);
-    if (packet.pointingError < 0) {
-        // if (packet.pointingError > -20)
-        //     speed = mapf((packet.pointingError), 0, -180, 90, 76);
-        speed = mapf((packet.pointingError), 0, -180, 86, 80);  // 85 CW 86 88 200
-        headingServo.write(speed);                              // 85 CW 86 88 200
-        lengthRotated -= 1;
-    } else {
-        // if (packet.pointingError < 20)
-        //     speed = mapf((packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
-        speed = mapf((packet.pointingError), 0, 180, 97, 100);  // 98 CCW 95 93 -20
-        headingServo.write(speed);                              // 98 CCW 95 93 -20
-        lengthRotated += 1;
-    }
-    Serial.println(speed);
-    Serial.println(packet.pointingError);
-}
 // void adjustHeading() {
-//     // pid.Compute();
-
-//     float servoSpeed = 90;
+//     float speed;
 //     sma.add(packet.pointingError);
-//     if (heading < 0) {
-//         servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
-//         // servoSpeed = mapf(packet.pointingError, 0, -180, 85, 20);
-//         // headingServo.write();  // 85 CW 86 88
+//     if (packet.pointingError < 0) {
+//         if (packet.pointingError > -20)
+//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 76);
+//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 45);  // 85 CW 86 88 200
+//         headingServo.write(speed);                                                                    // 85 CW 86 88 200
 //         lengthRotated -= 1;
 //     } else {
-//         servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
-//         // servoSpeed = mapf(packet.pointingError, 0, 180, 93, 160);
-//         // headingServo.write();  // 98 CCW 95 93
+//         if (packet.pointingError < 20)
+//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
+//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 135);      // 98 CCW 95 93 -20
+//         headingServo.write(speed);                                                                        // 98 CCW 95 93 -20
 //         lengthRotated += 1;
 //     }
-//     // sma.add(servoSpeed);
-//     // headingServo.write(sma.getAverage());
-
-//     headingServo.write(servoSpeed);
-
-//     // // PID ver. starts here
-//     // headingServo.write(pidOutput + 90);
-//     // // if (packet.pointingError < 0) {
-//     // //     // servoSpeed = mapf((packet.pointingError > -20 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 0);  // 85 CW 86 88 200
-//     // //     headingServo.write(servoSpeed);  // 85 CW 86 88 200
-//     // //     lengthRotated -= 1;
-//     // // } else {
-//     // //     // servoSpeed = mapf((packet.pointingError < 20 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 180);  // 98 CCW 95 93 -20
-//     // //     headingServo.write(servoSpeed);  // 98 CCW 95 93 -20
-//     // //     lengthRotated += 1;
-//     // // }
-//     // Serial.print(pitch);
-//     // Serial.print(" ");
-//     // Serial.print(packet.pointingError);
-//     // Serial.print(" ");
-//     // Serial.println(pidOutput + 90);
+//     Serial.println(speed);
+//     Serial.println(packet.pointingError);
 // }
+void adjustHeading() {
+    tError = packet.pointingError < 0 ? -packet.pointingError : packet.pointingError;
+
+    // PID ver. starts here
+    double outcome = packet.pointingError < 0 ? -pidOutput + 88 : pidOutput + 93;
+    headingServo.write(outcome);
+
+    Serial.print(packet.pointingError);
+    Serial.print(" ");
+    Serial.println(outcome);
+}
 
 void (*resetFunc)(void) = 0;
 
@@ -569,32 +546,3 @@ void gimbalCalibration() {
         // sma.add(packet.pointingError);
     }
 }
-
-// void gimbalCalibration() {
-//     // Do gimbal calibration logicWaiting for logic after testing
-//     // Don't forget to set 'pointing error' and 'state'
-//     sensors_event_t event;
-//     bnoGimbal.getEvent(&event);
-
-//     heading = event.orientation.roll;
-//     pitch = event.orientation.heading;  // sensor roll is, in fact, pitch in real world (due to sensor placement)
-
-//     if ((isnan(pitch) || isnan(heading)) && millis() > 3000) {
-//         headingServo.write(90);
-//         pitchServo.write(90);
-//         delay(100);
-//         return;
-//     }
-//     if (millis() > 3000) {
-//         packet.pointingError = heading - 180;
-//         if (packet.pointingError <= -20 && packet.pointingError >= 20)
-//             sma.add(packet.pointingError);
-//         Serial.print(packet.pointingError);
-//         Serial.print("\t");
-//         Serial.print(sma.getAverage());
-//         Serial.print("\t");
-//         adjustPitch();
-//         adjustHeading();
-//         getRotatedDegrees();
-//     }
-// }
