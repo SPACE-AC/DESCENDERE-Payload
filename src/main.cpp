@@ -129,7 +129,7 @@ class SimpleMovingAverage {
     float getAverage() {
         return sum / count;
     }
-}(sma)(10);
+}(sma)(1);
 
 void blink(const unsigned int&, const unsigned int& delay_ms = 100);
 void beep(const unsigned int&, const unsigned int& delay_ms = 100);
@@ -425,16 +425,16 @@ void adjustHeading() {
     float speed;
     sma.add(packet.pointingError);
     if (packet.pointingError < 0) {
-        if (packet.pointingError > -20)
-            speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 76);
-        speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 45);  // 85 CW 86 88 200
-        headingServo.write(speed);                                                                    // 85 CW 86 88 200
+        // if (packet.pointingError > -20)
+        //     speed = mapf((packet.pointingError), 0, -180, 90, 76);
+        speed = mapf((packet.pointingError), 0, -180, 86, 80);  // 85 CW 86 88 200
+        headingServo.write(speed);                              // 85 CW 86 88 200
         lengthRotated -= 1;
     } else {
-        if (packet.pointingError < 20)
-            speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
-        speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 135);      // 98 CCW 95 93 -20
-        headingServo.write(speed);                                                                        // 98 CCW 95 93 -20
+        // if (packet.pointingError < 20)
+        //     speed = mapf((packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
+        speed = mapf((packet.pointingError), 0, 180, 97, 100);  // 98 CCW 95 93 -20
+        headingServo.write(speed);                              // 98 CCW 95 93 -20
         lengthRotated += 1;
     }
     Serial.println(speed);
