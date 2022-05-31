@@ -1,8 +1,6 @@
 #include <Adafruit_BME280.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
-// #include <Comp6DOF_n0m1.h>
-// #include <AutoPID.h>
 #include <EEPROM.h>
 #include <InternalTemperature.h>
 #include <PID_v1.h>
@@ -16,9 +14,7 @@
 
 #include <queue>
 
-// Define connection pins
-
-// CONFIGURATION - START
+// *** CONFIGURATION - START ***
 
 #define TEAM_ID 1022
 
@@ -40,11 +36,11 @@
 
 #define SERVO_HEADING_PIN 5
 #define SERVO_PITCH_PIN 6
-#define CAMERA_PIN 0
+#define CAMERA_PIN 9
 
 #define GIMBAL_CHECK_RATE 5
 
-// CONFIGURATION - END
+// *** CONFIGURATION - END ***
 
 #define operationEEAddr 0
 #define packetCountEEAddr 1
@@ -90,7 +86,7 @@ struct Packet {
         return String(TEAM_ID) + "," + String(time) + "," + packetCount + ",T," + String(altitude) + "," +
                String(temp) + "," + String(voltage) + "," + gyro_r + "," + gyro_p + "," + gyro_y +
                "," + accel_r + "," + accel_p + "," + accel_y + "," + mag_r + "," +
-               mag_p + "," + mag_y + "," + pointingError + "," + state + "$$$";
+               mag_p + "," + mag_y + "," + pointingError + "," + state + "$";
     }
 };
 Packet packet;
@@ -156,8 +152,10 @@ void setup() {
     pitchServo.attach(SERVO_PITCH_PIN);
 
     digitalWrite(BUZZER_PIN, HIGH);
+    digitalWrite(LED_PIN, HIGH);
     delay(1000);
     digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_PIN, LOW);
     delay(500);
 
     Wire.setTimeout(3000000);
@@ -192,27 +190,6 @@ void setup() {
     pid.SetMode(AUTOMATIC);
     pid.SetSampleTime(GIMBAL_CHECK_RATE);
 
-    // pid.setBangBang(0);
-    // pid.setTimeStep(100);
-    // for (int i = 0; i < 300; i++)
-    //     sma.add(90);
-
-    // // get bno055 offset
-    // bnoPcb.setMode(OPERATION_MODE_CONFIG);
-    // bnoGimbal.setMode(OPERATION_MODE_CONFIG);
-    // delay(1000);
-    // bnoPcb.setMode(OPERATION_MODE_NDOF);
-    // bnoGimbal.setMode(OPERATION_MODE_NDOF);
-    // delay(1000);
-    // bnoPcb.getSensorOffsets(bnoPcb.accelOffset, bnoPcb.gyroOffset, bnoPcb.magOffset);
-    // bnoGimbal.getSensorOffsets(bnoGimbal.accelOffset, bnoGimbal.gyroOffset, bnoGimbal.magOffset);
-    // bnoPcb.setMode(OPERATION_MODE_CONFIG);
-    // bnoGimbal.setMode(OPERATION_MODE_CONFIG);
-    // delay(1000);
-    // bnoPcb.setMode(OPERATION_MODE_NDOF);
-    // bnoGimbal.setMode(OPERATION_MODE_NDOF);
-    // delay(1000);
-
     if (SD.begin(SD_CS_PIN))
         Serial.println("✔ SUCCEED: SD card reader");
     else {
@@ -235,24 +212,22 @@ void doCommand(String telem) {
     Serial.println("IN: " + telem);
     if (telem == "ON") {
         if (millis() - lastOn < 1000) return;
-        packet.state = "ACQUIRING_TARGET";
+        beep(3);
+        packet.state = "TARGET_POINTING";
         shouldOperate = true;
         Serial.println("OPERATION ON");
         packet.packetCount = 0;
         EEPROM.update(packetCountEEAddr, packet.packetCount);
-        groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
         EEPROM.update(groundEEAddr, groundAlt);
         EEPROM.update(operationEEAddr, true);
         digitalWrite(CAMERA_PIN, LOW);
         delay(550);
         digitalWrite(CAMERA_PIN, HIGH);
-        // pid.SetOutputLimits(-30, 30);
-        pid.SetMode(AUTOMATIC);
-        pid.SetSampleTime(GIMBAL_CHECK_RATE);
         lastOn = millis();
     } else if (telem == "OFF") {
-        packet.state = "IDLE";
         if (millis() - lastOff < 1000) return;
+        beep(2);
+        packet.state = "IDLE";
         shouldOperate = false;
         Serial.println("OPERATION OFF");
         EEPROM.update(operationEEAddr, 0);
@@ -271,16 +246,8 @@ void doCommand(String telem) {
         packet.packetCount += 1;
         sprintf(packet.time, "%02d:%02d:%02d", hour(), minute(), second());
         String outTelemetry = packet.combine();
-        // String outTelemetry = packet.combine() + "\r\r\r";
 
         digitalWrite(LED_PIN, HIGH);
-        // String outTelemetry1 = outTelemetry.substring(0, outTelemetry.length() / 2);
-        // String outTelemetry2 = outTelemetry.substring(outTelemetry.length() / 2, outTelemetry.length());
-        // xbee.print(outTelemetry1);
-        // Serial.print(outTelemetry1);
-        // // delay(50);
-        // xbee.print(outTelemetry2);
-        // Serial.print(outTelemetry2);
         xbee.print(outTelemetry);
         Serial.print(outTelemetry);
 
@@ -292,6 +259,15 @@ void doCommand(String telem) {
             file.println(outTelemetry);
             file.close();
         }
+    } else if (telem.startsWith("ST,")) {
+        beep(1);
+        int hr = telem.substring(3, 5).toInt();
+        int min = telem.substring(6, 8).toInt();
+        int sec = telem.substring(9, 11).toInt();
+        setTime(hr, min, sec, day(), month(), year());
+    } else if (telem == "ALT") {
+        beep(1);
+        groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
     }
 }
 
@@ -425,25 +401,6 @@ void adjustPitch() {
         pitchServo.write(98);  // 98
     }
 }
-// void adjustHeading() {
-//     float speed;
-//     sma.add(packet.pointingError);
-//     if (packet.pointingError < 0) {
-//         if (packet.pointingError > -20)
-//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 90, 76);
-//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, -180, 86, 45);  // 85 CW 86 88 200
-//         headingServo.write(speed);                                                                    // 85 CW 86 88 200
-//         lengthRotated -= 1;
-//     } else {
-//         if (packet.pointingError < 20)
-//             speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 90, 115);  // 98 CCW 95 93 -20 90, 115 97, 100
-//         speed = mapf((millis() > 10000 ? sma.getAverage() : packet.pointingError), 0, 180, 97, 135);      // 98 CCW 95 93 -20
-//         headingServo.write(speed);                                                                        // 98 CCW 95 93 -20
-//         lengthRotated += 1;
-//     }
-//     Serial.println(speed);
-//     Serial.println(packet.pointingError);
-// }
 void adjustHeading() {
     tError = packet.pointingError < 0 ? -packet.pointingError : packet.pointingError;
 
@@ -526,22 +483,10 @@ void gimbalCalibration() {
         // resetFunc();
         return;
     }
-    // Serial.print(roll);
-    // Serial.print("\t");
-    // Serial.print(pitch);
-    // Serial.print("\t");
-    // Serial.print(heading);
-    // Serial.print("\t");
-    // Serial.println(lengthRotated);
     if (millis() > 3000) {
         adjustPitch();
         adjustHeading();
         getRotatedDegrees();
-        // if (heading > 0) {
-        //     packet.pointingError = 180 - heading;
-        // } else if (heading < 0) {
-        //     packet.pointingError = -180 - heading;
-        // }
         packet.pointingError = heading;
         // sma.add(packet.pointingError);
     }
