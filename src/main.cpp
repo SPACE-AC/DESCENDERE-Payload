@@ -38,7 +38,7 @@
 #define SERVO_PITCH_PIN 6
 #define CAMERA_PIN 9
 
-#define GIMBAL_CHECK_RATE 5
+#define GIMBAL_CHECK_RATE 20
 
 // *** CONFIGURATION - END ***
 
@@ -63,6 +63,13 @@ bool shouldOperate;
 char fileName[100];
 float groundAlt;
 bool isBnoGimbalOk = true;
+float ptrErr = 0;
+uint32_t fullRangeTime;
+float initialDifference;
+double pitch, heading;
+double pcb_roll, pcb_pitch, pcb_heading;
+double angleRotated = 0, gimbalAngleRotated = 0;
+bool shouldComputePid = true;
 
 struct Packet {
     unsigned long packetCount;  // tried to make this a static variable, but it didn't work
@@ -93,7 +100,7 @@ Packet packet;
 
 double Setpoint = 0, pidOutput;
 double tError;
-PID pid(&tError, &pidOutput, &Setpoint, 0.35, 0.000005, 0.04, REVERSE);
+PID pid(&tError, &pidOutput, &Setpoint, 0.8, 0.000001, 0.02, REVERSE);
 // PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 0, 100, 3100, DIRECT);
 // AutoPID pid(&packet.pointingError, &Setpoint, &servoSpeed, 0, 180, 5, 5, 0.1);
 
@@ -151,6 +158,12 @@ void setup() {
     headingServo.attach(SERVO_HEADING_PIN);
     pitchServo.attach(SERVO_PITCH_PIN);
 
+    // headingServo.write(180);
+    // delay(430);
+    // headingServo.write(90);
+    // while (true)
+    //     ;
+
     digitalWrite(BUZZER_PIN, HIGH);
     digitalWrite(LED_PIN, HIGH);
     delay(1000);
@@ -201,6 +214,12 @@ void setup() {
 
     setSyncProvider(getTeensy3Time);
 
+    // headingServo.write(180);
+    // delay(545);  // 430
+    // headingServo.write(90);
+    // while (true)
+    //     ;
+
     recovery();  // Recovery from EEPROM in case of power failure
     Serial.println("READY NOW");
     delay(3000);
@@ -220,6 +239,7 @@ void doCommand(String telem) {
         EEPROM.update(packetCountEEAddr, packet.packetCount);
         EEPROM.update(groundEEAddr, groundAlt);
         EEPROM.update(operationEEAddr, true);
+        angleRotated = 0;
         digitalWrite(CAMERA_PIN, LOW);
         delay(550);
         digitalWrite(CAMERA_PIN, HIGH);
@@ -267,14 +287,15 @@ void doCommand(String telem) {
         setTime(hr, min, sec, day(), month(), year());
     } else if (telem == "ALT") {
         beep(1);
-        groundAlt = round(bme.readAltitude(SEALEVELPRESSURE_HPA));
+        groundAlt = bme.readAltitude(SEALEVELPRESSURE_HPA);
+        EEPROM.put(groundEEAddr, groundAlt);
     }
 }
 
 unsigned long time_lastrun = 0;
 unsigned long timeLastGimbal = 0;
 void loop() {
-    if (millis() - time_lastrun > 250) {
+    if (millis() - time_lastrun > 20) {
         time_lastrun = millis();
         getVoltage();
         getBnoData();
@@ -291,17 +312,21 @@ void loop() {
     }
     if (shouldOperate && millis() - timeLastGimbal > GIMBAL_CHECK_RATE) {
         timeLastGimbal = millis();
+        // Serial.print(pcb_heading);
+        // Serial.print(",");
+        // Serial.println(getRotatedDegrees());
+
         if (isBnoGimbalOk) gimbalCalibration();
     } else {
         // digitalWrite(BUZZER_PIN, LOW);
     }
-    pid.Compute();
+    if (shouldComputePid) pid.Compute();
 }
 
 void recovery() {
     shouldOperate = EEPROM.read(operationEEAddr);
     packet.packetCount = EEPROM.read(packetCountEEAddr);
-    groundAlt = EEPROM.read(groundEEAddr);
+    EEPROM.get(groundEEAddr, groundAlt);
     if (shouldOperate) {
         Serial.println("Recovery status: Operating, recovering...");
         digitalWrite(CAMERA_PIN, LOW);
@@ -322,6 +347,18 @@ void recovery() {
     Serial.print("Selected file name: ");
     Serial.println(fileName);
     blinkbeep(3);
+
+    // checkSwingBack();
+    // Serial.println("Swing test complete");
+    // Serial.print(fullRangeTime);
+    // Serial.print(" ms,");
+    // Serial.print(" Angle: ");
+    // Serial.println(gimbalAngleRotated);
+
+    // while (true)
+    //     ;
+
+    // initialDifference = getRotatedDegrees();
 }
 
 void getBmeData() {
@@ -329,6 +366,7 @@ void getBmeData() {
     packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - groundAlt;
     // packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - 0;
 }
+
 void getBnoData() {
     imu::Vector<3> gyro = bnoPcb.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
     packet.gyro_r = gyro.x();
@@ -342,6 +380,25 @@ void getBnoData() {
     packet.mag_r = mag.x();
     packet.mag_p = mag.y();
     packet.mag_y = mag.z();
+
+    imu::Quaternion quat = bnoPcb.getQuat();
+    double qw = quat.w();
+    double qx = quat.x();
+    double qy = quat.y();
+    double qz = quat.z();
+    double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
+    qw *= qnorm;
+    qx *= qnorm;
+    qy *= qnorm;
+    qz *= qnorm;
+    double roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
+    double pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
+    pcb_heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
+    // Serial.print(roll);
+    // Serial.print(",");
+    // Serial.print(pitch);
+    // Serial.print(",");
+    // Serial.println(yaw);
 }
 
 void getVoltage() {
@@ -386,10 +443,44 @@ double mapf(double x, double in_min, double in_max, double out_min, double out_m
 }
 
 double qw, qx, qy, qz;
-double pitch, heading;
-double pcb_roll, pcb_pitch, pcb_heading;
-double lengthRotated = 0;
+void getGimbalIMU() {
+    // Do gimbal calibration logicWaiting for logic after testing
+    // Don't forgot to set 'pointing error' and 'state'
+    // if (!bnoGimbal.begin()) resetFunc();
+    imu::Quaternion quat = bnoGimbal.getQuat();
+    qw = quat.w();
+    qx = quat.x();
+    qy = quat.y();
+    qz = quat.z();
+    // Serial.println("Running gimbal calibration...");
+    double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
+    qw *= qnorm;
+    qx *= qnorm;
+    qy *= qnorm;
+    qz *= qnorm;
+    pitch = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
+    // pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
+    heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
+    // Serial.println(bnoGimbal.getVector(Adafruit_BNO055::VECTOR_EULER).z());
+}
+
+float getRotatedDegrees() {
+    static double lastAngle = pcb_heading;
+    angleRotated += circleDifference(pcb_heading, lastAngle);
+    lastAngle = pcb_heading;
+    return angleRotated;
+}
+
+float getGimbalRotatedDegrees() {
+    static double lastGimbalAngle = heading;
+    gimbalAngleRotated += circleDifference(heading, lastGimbalAngle);
+    lastGimbalAngle = heading;
+    return gimbalAngleRotated;
+}
+
 void adjustPitch() {
+    // pitch = pitch - 135;
+    // if (pitch < -180) pitch += 360;
     if (pitch >= 130 && pitch <= 140) {
         pitchServo.write(90);
         return;
@@ -402,15 +493,44 @@ void adjustPitch() {
     }
 }
 void adjustHeading() {
-    tError = packet.pointingError < 0 ? -packet.pointingError : packet.pointingError;
+    // ptrErr = bnoGimbal.getVector(Adafruit_BNO055::VECTOR_EULER).z() - 180;
+    tError = ptrErr < 0 ? -ptrErr : ptrErr;
 
     // PID ver. starts here
-    double outcome = packet.pointingError < 0 ? -pidOutput + 88 : pidOutput + 93;
-    headingServo.write(outcome);
+    double outcome = ptrErr < 0 ? -pidOutput + 88 : pidOutput + 95;
+    if (tError > 5) {
+        shouldComputePid = true;
+        headingServo.write(outcome);
+    } else {
+        shouldComputePid = false;
+        headingServo.write(90);
+    }
+    getGimbalIMU();
 
-    Serial.print(packet.pointingError);
-    Serial.print(" ");
-    Serial.println(outcome);
+    packet.pointingError = heading;
+    // Serial.print(ptrErr);
+    // Serial.print(" ");
+    // Serial.println(outcome);
+    float rotated = getRotatedDegrees();
+    Serial.print(pcb_heading);
+    Serial.print(",");
+    Serial.print(rotated);
+    Serial.print(",");
+    Serial.print(outcome);
+    Serial.print(",");
+    Serial.println(packet.pointingError);
+    // if (rotated > 540) {
+    //     headingServo.write(0);
+    //     delay(500);  // 430 545
+    //     headingServo.write(90);
+    //     angleRotated -= 360;
+    // }
+    // if (rotated < 0) {
+    //     headingServo.write(180);
+    //     delay(500);
+    //     headingServo.write(90);
+    //     angleRotated += 360;
+    // }
 }
 
 void (*resetFunc)(void) = 0;
@@ -418,61 +538,56 @@ void (*resetFunc)(void) = 0;
 bool initialRound = true;
 // float initialDiff = 0;
 double previousDegree;
-double degreesRotated = 0;
-void getRotatedDegrees() {
-    return;
-    // straighten degrees
-    // if (heading < 0) heading = mapf(heading, -180, 0, 180, 360);
-    // if (pcb_heading < 0) pcb_heading = mapf(pcb_heading, -180, 0, 180, 360);
-    // const float currentDiff = heading - pcb_heading;
-    if (!initialRound) degreesRotated += pcb_heading - previousDegree;
-    previousDegree = pcb_heading;
-    initialRound = false;
 
-    Serial.print(heading);
-    Serial.print(" ");
-    Serial.println(degreesRotated);
-    if (degreesRotated > 270) {
-        headingServo.write(70);
-    } else if (degreesRotated < -270) {
-        headingServo.write(110);
+double circleDifference(double left, double right) {
+    if (left > 0 && right < 0 && abs(left - right) > 180) {
+        right += 360;
+        return right - left;
     }
-
-    qw = bnoPcb.getQuat().w();
-    qx = bnoPcb.getQuat().x();
-    qy = bnoPcb.getQuat().y();
-    qz = bnoPcb.getQuat().z();
-    double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
-    qw *= qnorm;
-    qx *= qnorm;
-    qy *= qnorm;
-    qz *= qnorm;
-    pcb_roll = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
-    pcb_pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
-    pcb_heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
+    if (left < 0 && right > 0 && abs(left - right) > 180) {
+        left += 360;
+        return left - right;
+    }
+    return left - right;
 }
 
-void gimbalCalibration() {
-    // Do gimbal calibration logicWaiting for logic after testing
-    // Don't forgot to set 'pointing error' and 'state'
-    // if (!bnoGimbal.begin()) resetFunc();
-    qw = bnoGimbal.getQuat().w();
-    qx = bnoGimbal.getQuat().x();
-    qy = bnoGimbal.getQuat().y();
-    qz = bnoGimbal.getQuat().z();
-    // Serial.println("Running gimbal calibration...");
-    double qnorm = 1 / sqrt(qw * qw + qx * qx + qy * qy + qz * qz);  // normalize the quaternion
-    qw *= qnorm;
-    qx *= qnorm;
-    qy *= qnorm;
-    qz *= qnorm;
-    pitch = 180 / M_PI * atan2(qw * qx + qy * qz, 0.5 - qx * qx - qy * qy);
-    // pitch = 180 / M_PI * asin(2 * (qw * qy - qx * qz));
-    heading = 180 / M_PI * atan2(qw * qz + qx * qy, 0.5 - qy * qy - qz * qz);
+bool isHeadingGood(double heading) {
+    return heading >= -20 && heading <= 20;
+}
 
+void checkSwingBack() {
+    // Move to one end
+    headingServo.write(45);
+    delay(3000);
+    getGimbalRotatedDegrees();
+    headingServo.write(135);
+
+    uint32_t startTime = millis();
+    gimbalAngleRotated = 0;
+    double lastAngle = 0;
+    do {
+        lastAngle = gimbalAngleRotated;
+        getGimbalIMU();
+        getGimbalRotatedDegrees();
+
+        // if () {
+        fullRangeTime = millis() - startTime;
+        //     return;
+        // }
+        delay(50);
+        Serial.print(gimbalAngleRotated);
+        Serial.print(",");
+        Serial.println(lastAngle);
+    } while (abs(lastAngle - gimbalAngleRotated) > 0);
+    headingServo.write(90);
+}
+
+short driftness;
+
+void gimbalCalibration() {
+    getGimbalIMU();
+    getBnoData();
     const imu::Vector<3> mag = bnoGimbal.getVector(Adafruit_BNO055::VECTOR_MAGNETOMETER);
-    double heading2 = atan2(mag.y(), mag.x()) * 180 / M_PI;
-    // double heading3 =
 
     if ((isnan(pitch) || isnan(heading)) && millis() > 3000) {
         headingServo.write(90);
@@ -483,11 +598,38 @@ void gimbalCalibration() {
         // resetFunc();
         return;
     }
+
+    // If error stays, bounce back
+    //
+    // if (!isHeadingGood(heading)) {
+    //     if (heading > 0)
+    //         driftness += 1;
+    //     else if (heading < 0)
+    //         driftness -= 1;
+    // } else {
+    //     driftness > 0 ? driftness-- : driftness++;
+    // }
+    // if (driftness > 400) {
+    //     driftness = 0;
+
+    //     headingServo.write(180);
+    //     delay(200);
+    //     headingServo.write(90);
+    //     return;
+    // }
+    // if (driftness < -400) {
+    //     driftness = 0;
+
+    //     headingServo.write(0);
+    //     delay(200);
+    //     headingServo.write(90);
+    //     return;
+    // }
+
     if (millis() > 3000) {
         adjustPitch();
         adjustHeading();
-        getRotatedDegrees();
-        packet.pointingError = heading;
+        ptrErr = heading;
         // sma.add(packet.pointingError);
     }
 }
