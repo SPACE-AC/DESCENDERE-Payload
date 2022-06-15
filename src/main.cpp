@@ -7,6 +7,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
+#include <SimpleKalmanFilter.h>
 #include <SoftwareSerial.h>
 #include <TimeLib.h>
 #include <Wire.h>
@@ -38,7 +39,7 @@
 #define SERVO_PITCH_PIN 6
 #define CAMERA_PIN 9
 
-#define GIMBAL_CHECK_RATE 20
+#define GIMBAL_CHECK_RATE 5
 
 // *** CONFIGURATION - END ***
 
@@ -50,6 +51,7 @@
 
 Adafruit_BNO055 bnoPcb = Adafruit_BNO055(55, BNO_PCB_ADDR);
 Adafruit_BNO055 bnoGimbal = Adafruit_BNO055(55, BNO_GIMBAL_ADDR);
+SimpleKalmanFilter altitudeFilter(1, 1, 0.3);
 Adafruit_BME280 bme;
 
 Servo headingServo;
@@ -70,6 +72,7 @@ double pitch, heading;
 double pcb_roll, pcb_pitch, pcb_heading;
 double angleRotated = 0, gimbalAngleRotated = 0;
 bool shouldComputePid = true;
+File file;
 
 struct Packet {
     unsigned long packetCount;  // tried to make this a static variable, but it didn't work
@@ -90,6 +93,12 @@ struct Packet {
     String state;
 
     String combine() {
+        return String(altitude) + "," +
+               String(temp) + "," + String(voltage) + "," + gyro_r + "," + gyro_p + "," + gyro_y +
+               "," + accel_r + "," + accel_p + "," + accel_y + "," + mag_r + "," +
+               mag_p + "," + mag_y + "," + pointingError + "," + state + "$";
+    }
+    String fullCombine() {
         return String(TEAM_ID) + "," + String(time) + "," + packetCount + ",T," + String(altitude) + "," +
                String(temp) + "," + String(voltage) + "," + gyro_r + "," + gyro_p + "," + gyro_y +
                "," + accel_r + "," + accel_p + "," + accel_y + "," + mag_r + "," +
@@ -100,7 +109,7 @@ Packet packet;
 
 double Setpoint = 0, pidOutput;
 double tError;
-PID pid(&tError, &pidOutput, &Setpoint, 0.8, 0.000001, 0.02, REVERSE);
+PID pid(&tError, &pidOutput, &Setpoint, 0.8, 0.0000005, 0.02, REVERSE);  // 0.3, 0.00001, 0.001 | 0.8, 0.000001, 0.02
 // PID pid(&packet.pointingError, &servoSpeed, &Setpoint, 0, 100, 3100, DIRECT);
 // AutoPID pid(&packet.pointingError, &Setpoint, &servoSpeed, 0, 180, 5, 5, 0.1);
 
@@ -274,10 +283,10 @@ void doCommand(String telem) {
         digitalWrite(LED_PIN, LOW);
 
         EEPROM.update(packetCountEEAddr, packet.packetCount);
-        File file = SD.open(fileName, FILE_WRITE);
+        if (!file) file = SD.open(fileName, FILE_WRITE);
         if (file) {
-            file.println(outTelemetry);
-            file.close();
+            file.println(packet.fullCombine());
+            file.flush();
         }
     } else if (telem.startsWith("ST,")) {
         beep(1);
@@ -285,6 +294,7 @@ void doCommand(String telem) {
         int min = telem.substring(6, 8).toInt();
         int sec = telem.substring(9, 11).toInt();
         setTime(hr, min, sec, day(), month(), year());
+        Teensy3Clock.set(now());
     } else if (telem == "ALT") {
         beep(1);
         groundAlt = bme.readAltitude(SEALEVELPRESSURE_HPA);
@@ -295,11 +305,17 @@ void doCommand(String telem) {
 unsigned long time_lastrun = 0;
 unsigned long timeLastGimbal = 0;
 void loop() {
-    if (millis() - time_lastrun > 20) {
+    if (millis() - time_lastrun > 100) {
         time_lastrun = millis();
         getVoltage();
         getBnoData();
         getBmeData();
+
+        if (!file) file = SD.open(fileName, FILE_WRITE);
+        if (file) {
+            file.println(packet.fullCombine());
+            file.flush();
+        }
         // doCommand("POLL");
     }
     if (Serial.available()) {
@@ -342,10 +358,17 @@ void recovery() {
     int fileIndex = 0;
     do {
         fileIndex++;
-        String("TP_" + String(fileIndex) + ".txt").toCharArray(fileName, 100);
+        String("TP_" + String(fileIndex) + ".csv").toCharArray(fileName, 100);
     } while (SD.exists(fileName));
     Serial.print("Selected file name: ");
     Serial.println(fileName);
+
+    if (!file) file = SD.open(fileName, FILE_WRITE);
+    if (file) {
+        file.println("TEAM_ID,MISSION_TIME,PACKET_COUNT,PACKET_TYPE,TP_ALTITUDE,TP_TEMP,TP_VOLTAGE,GYRO_R,GYRO_P,GYRO_Y,ACCEL_R,ACCEL_P,ACCEL_Y,MAG_R,MAG_P,MAG_Y,POINTING_ERROR,TP_SOFTWARE_STATE");
+        file.flush();
+    }
+
     blinkbeep(3);
 
     // checkSwingBack();
@@ -363,7 +386,7 @@ void recovery() {
 
 void getBmeData() {
     packet.temp = bme.readTemperature();
-    packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - groundAlt;
+    packet.altitude = (altitudeFilter.updateEstimate(bme.readAltitude(SEALEVELPRESSURE_HPA))) - groundAlt;
     // packet.altitude = (bme.readAltitude(SEALEVELPRESSURE_HPA)) - 0;
 }
 
@@ -497,7 +520,7 @@ void adjustHeading() {
     tError = ptrErr < 0 ? -ptrErr : ptrErr;
 
     // PID ver. starts here
-    double outcome = ptrErr < 0 ? -pidOutput + 88 : pidOutput + 95;
+    double outcome = ptrErr < 0 ? -pidOutput + 85 : pidOutput + 95;
     if (tError > 5) {
         shouldComputePid = true;
         headingServo.write(outcome);
@@ -519,18 +542,28 @@ void adjustHeading() {
     Serial.print(outcome);
     Serial.print(",");
     Serial.println(packet.pointingError);
-    // if (rotated > 540) {
+    // if (rotated > 640) {
     //     headingServo.write(0);
-    //     delay(500);  // 430 545
+    //     delay(545);  // 430 545
     //     headingServo.write(90);
     //     angleRotated -= 360;
     // }
     // if (rotated < 0) {
     //     headingServo.write(180);
-    //     delay(500);
+    //     delay(545);
     //     headingServo.write(90);
     //     angleRotated += 360;
     // }
+
+    if (packet.pointingError < -160) {
+        headingServo.write(180);
+        delay(800);
+        headingServo.write(90);
+    } else if (packet.pointingError > 160) {
+        headingServo.write(0);
+        delay(800);
+        headingServo.write(90);
+    }
 }
 
 void (*resetFunc)(void) = 0;
